@@ -3,6 +3,34 @@ import os
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import time
+import json
+from pydantic import BaseModel, ValidationError
+
+class BookRecord(BaseModel):
+    title: str
+    product_url: str
+    price_gbp: float
+    price_text: str
+    availability_text: str
+    rating_text: str | None
+    description: str | None
+    source_page: str
+    fetched_at: str
+
+def normalize_record(raw):
+    price_clean = raw["price_text"].replace("£", "").replace("Â", "").strip()
+    price_gbp = float(price_clean)
+    return {
+        "title": raw["title"],
+        "product_url": raw["product_url"],
+        "price_gbp": price_gbp,
+        "price_text": raw["price_text"],
+        "availability_text": raw["availability_text"],
+        "rating_text": raw["rating_text"],
+        "description": raw["description"],
+        "source_page": raw["source_page"],
+        "fetched_at": raw["fetched_at"]
+    }
 
 USER_AGENT = "FlyRankInternshipA9/1.0 (+https://github.com/tehreemtasawar/flyrank-scraper-python)"
 def fetch_page(url, cache_path):
@@ -14,6 +42,7 @@ def fetch_page(url, cache_path):
     print(f"FETCH: {url}")
     headers = {"User-Agent": USER_AGENT}
     response = requests.get(url, headers=headers, timeout=10)
+    response.encoding = "utf-8"
 
     print(f"Status: {response.status_code}, Size: {len(response.text)} bytes")
 
@@ -94,13 +123,26 @@ if __name__ == "__main__":
 
     records = []
     for i, book_url in enumerate(unique_links):
-        book_id = book_url.rstrip("/").split("/")[-2]
-        cache_path = f"cache/book-{book_id}.html"
-        book_html = fetch_page(book_url, cache_path)
-        source_page = f"https://books.toscrape.com/catalogue/page-{(i // 20) + 1}.html"
-        record = extract_book_details(book_html, book_url, source_page)
-        records.append(record)
-        time.sleep(0.5)
+            valid_records = []
+    invalid_records = []
+    seen_urls = set()
 
-    print(f"detail_pages={len(records)}")
-    print(records[0])
+    for raw in records:
+        if raw["product_url"] in seen_urls:
+            continue
+        seen_urls.add(raw["product_url"])
+        try:
+            normalized = normalize_record(raw)
+            validated = BookRecord(**normalized)
+            valid_records.append(validated.model_dump())
+        except (ValidationError, ValueError) as e:
+            invalid_records.append({"record": raw, "reason": str(e)})
+
+    with open("output/books.json", "w", encoding="utf-8") as f:
+        json.dump(valid_records, f, indent=2, ensure_ascii=False)
+
+    with open("output/errors.json", "w", encoding="utf-8") as f:
+        json.dump(invalid_records, f, indent=2, ensure_ascii=False)
+
+    print(f"valid_records={len(valid_records)}")
+    print(f"invalid_records={len(invalid_records)}")
