@@ -41,6 +41,38 @@ def extract_book_links(html, page_url):
 
     return links, next_url
 
+from datetime import datetime, timezone
+import re
+
+def extract_book_details(html, book_url, source_page):
+    soup = BeautifulSoup(html, "html.parser")
+
+    title = soup.find("h1").get_text(strip=True)
+
+    price_text = soup.find("p", class_="price_color").get_text(strip=True)
+
+    availability_text = soup.find("p", class_="instock availability").get_text(strip=True)
+
+    rating_tag = soup.find("p", class_=re.compile("star-rating"))
+    rating_text = rating_tag["class"][1] if rating_tag else None
+
+    description_tag = soup.find("div", id="product_description")
+    if description_tag:
+        description = description_tag.find_next_sibling("p").get_text(strip=True)
+    else:
+        description = None
+
+    return {
+        "title": title,
+        "product_url": book_url,
+        "price_text": price_text,
+        "availability_text": availability_text,
+        "rating_text": rating_text,
+        "description": description,
+        "source_page": source_page,
+        "fetched_at": datetime.now(timezone.utc).isoformat()
+    }
+
 if __name__ == "__main__":
     all_links = []
     url = "https://books.toscrape.com/catalogue/page-1.html"
@@ -59,3 +91,16 @@ if __name__ == "__main__":
     print(f"catalogue_pages={page_num - 1}")
     print(f"discovered={len(all_links)}")
     print(f"unique_urls={len(unique_links)}")
+
+    records = []
+    for i, book_url in enumerate(unique_links):
+        book_id = book_url.rstrip("/").split("/")[-2]
+        cache_path = f"cache/book-{book_id}.html"
+        book_html = fetch_page(book_url, cache_path)
+        source_page = f"https://books.toscrape.com/catalogue/page-{(i // 20) + 1}.html"
+        record = extract_book_details(book_html, book_url, source_page)
+        records.append(record)
+        time.sleep(0.5)
+
+    print(f"detail_pages={len(records)}")
+    print(records[0])
