@@ -1,38 +1,17 @@
 import requests
 import os
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 import time
 import json
+import re
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from datetime import datetime, timezone
 from pydantic import BaseModel, ValidationError
-
-class BookRecord(BaseModel):
-    title: str
-    product_url: str
-    price_gbp: float
-    price_text: str
-    availability_text: str
-    rating_text: str | None
-    description: str | None
-    source_page: str
-    fetched_at: str
-
-def normalize_record(raw):
-    price_clean = raw["price_text"].replace("£", "").replace("Â", "").strip()
-    price_gbp = float(price_clean)
-    return {
-        "title": raw["title"],
-        "product_url": raw["product_url"],
-        "price_gbp": price_gbp,
-        "price_text": raw["price_text"],
-        "availability_text": raw["availability_text"],
-        "rating_text": raw["rating_text"],
-        "description": raw["description"],
-        "source_page": raw["source_page"],
-        "fetched_at": raw["fetched_at"]
-    }
+from typing import Optional
 
 USER_AGENT = "FlyRankInternshipA9/1.0 (+https://github.com/tehreemtasawar/flyrank-scraper-python)"
+
+
 def fetch_page(url, cache_path):
     if os.path.exists(cache_path):
         print(f"CACHE HIT: {cache_path}")
@@ -54,6 +33,7 @@ def fetch_page(url, cache_path):
 
     return response.text
 
+
 def extract_book_links(html, page_url):
     soup = BeautifulSoup(html, "html.parser")
     links = []
@@ -70,16 +50,12 @@ def extract_book_links(html, page_url):
 
     return links, next_url
 
-from datetime import datetime, timezone
-import re
 
 def extract_book_details(html, book_url, source_page):
     soup = BeautifulSoup(html, "html.parser")
 
     title = soup.find("h1").get_text(strip=True)
-
     price_text = soup.find("p", class_="price_color").get_text(strip=True)
-
     availability_text = soup.find("p", class_="instock availability").get_text(strip=True)
 
     rating_tag = soup.find("p", class_=re.compile("star-rating"))
@@ -102,7 +78,38 @@ def extract_book_details(html, book_url, source_page):
         "fetched_at": datetime.now(timezone.utc).isoformat()
     }
 
+
+class BookRecord(BaseModel):
+    title: str
+    product_url: str
+    price_gbp: float
+    price_text: str
+    availability_text: str
+    rating_text: Optional[str]
+    description: Optional[str]
+    source_page: str
+    fetched_at: str
+
+
+def normalize_record(raw):
+    price_clean = raw["price_text"].replace("£", "").replace("Â", "").strip()
+    price_gbp = float(price_clean)
+    return {
+        "title": raw["title"],
+        "product_url": raw["product_url"],
+        "price_gbp": price_gbp,
+        "price_text": raw["price_text"],
+        "availability_text": raw["availability_text"],
+        "rating_text": raw["rating_text"],
+        "description": raw["description"],
+        "source_page": raw["source_page"],
+        "fetched_at": raw["fetched_at"]
+    }
+
+
 if __name__ == "__main__":
+    start_time = time.time()
+
     all_links = []
     url = "https://books.toscrape.com/catalogue/page-1.html"
     page_num = 1
@@ -121,9 +128,31 @@ if __name__ == "__main__":
     print(f"discovered={len(all_links)}")
     print(f"unique_urls={len(unique_links)}")
 
+    unique_links.append("https://books.toscrape.com/catalogue/fake-broken-book_9999/index.html")
+
     records = []
+    failed_pages = 0
+    cache_hits = 0
+
     for i, book_url in enumerate(unique_links):
-            valid_records = []
+        book_id = book_url.rstrip("/").split("/")[-2]
+        cache_path = f"cache/book-{book_id}.html"
+        was_cached = os.path.exists(cache_path)
+        try:
+            book_html = fetch_page(book_url, cache_path)
+            if was_cached:
+                cache_hits += 1
+            source_page = f"https://books.toscrape.com/catalogue/page-{(i // 20) + 1}.html"
+            record = extract_book_details(book_html, book_url, source_page)
+            records.append(record)
+        except Exception as e:
+            print(f"FAILED: {book_url} - {e}")
+            failed_pages += 1
+        time.sleep(0.5)
+
+    print(f"detail_pages={len(records)}")
+
+    valid_records = []
     invalid_records = []
     seen_urls = set()
 
@@ -146,3 +175,18 @@ if __name__ == "__main__":
 
     print(f"valid_records={len(valid_records)}")
     print(f"invalid_records={len(invalid_records)}")
+
+    duration = time.time() - start_time
+    report = {
+        "start_time": datetime.now(timezone.utc).isoformat(),
+        "duration_seconds": round(duration, 2),
+        "pages_fetched": len(unique_links),
+        "cache_hits": cache_hits,
+        "valid_records": len(valid_records),
+        "invalid_records": len(invalid_records),
+        "failed_pages": failed_pages
+    }
+    with open("output/run-report.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
+    print(json.dumps(report, indent=2))
